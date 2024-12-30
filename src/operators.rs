@@ -44,18 +44,22 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
     assert!(ndim >= 2);
     let seq_len = y.shape()[ndim - 2];
     let total_seq_len = y.shape()[ndim - 1];
+    // 只有1次循环
     let batch = y.size() / (seq_len * total_seq_len);
     let data = unsafe { y.data_mut() };
     for b in 0..batch {
+        // 句子的长度offset
         let base = b * seq_len * total_seq_len;
         for i in 0..seq_len {
+            // 在哪一行的那一列offset
             let offset = base + i * total_seq_len;
+            // +1是倒不了
             let boundary = total_seq_len - seq_len + i + 1;
 
             let max = data[offset..offset + boundary]
                 .iter()
                 .fold(data[offset], |a, b| a.max(*b));
-
+            // 闭包查找最大值,当前值a和下一个值b比较，返回最大值
             let sum = (0..boundary)
                 .map(|j| {
                     let e = (data[offset + j] - max).exp();
@@ -63,27 +67,108 @@ pub fn masked_softmax(y: &mut Tensor<f32>) {
                     e
                 })
                 .sum::<f32>();
-
+                // 生成的e求和
             (0..boundary).for_each(|j| data[offset + j] /= sum);
+            // 后面的全部看不到的位置填充0
             (boundary..total_seq_len).for_each(|j| data[offset + j] = 0.0);
         }
     }
 }
 
 pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: f32) {
-    todo!("实现 rms_norm，计算前做一些必要的检查会帮助你后续调试")
+    let len = y.size();
+    assert!(len == x.size());
+    let n_col = y.shape()[y.shape().len()-1];
+    let n_row = y.shape()[y.shape().len()-2];
+    let batch = y.size() / (n_col * n_row);
+    let _y = unsafe { y.data_mut() };
+    let _x = x.data();
+    // 获取多少个列向量
+    
+    // 计算每一个列项的长度,直接使用w
+    // 计算多少个block,对每一个block里面的列向量来增加
+    // for b in (0..batch){
+    //     let base = b * n_col * n_row;
+    //     let mut rec = vec![0.0 as f32;n_col];
+    //     for i in (0..n_col*n_row){
+    //         // 获取当前的x
+    //         // _y[i+base] = _x[i+base]*w.data()[(i+base)%n_col];
+    //         // 统计x[i]
+           
+    //         rec[i%n_col]+= _x[i+base]*_x[i+base];
+    //     }
+    //     rec.iter_mut().for_each(|j|*j =(*j/n_row as f32).sqrt()+epsilon);
+    //     for i in (0..n_col*n_row){
+    //         // 获取当前的x
+    //         _y[i+base] = _x[i+base]*w.data()[(i)%n_col]/rec[i%n_col];
+    //         // 统计x[i]
+           
+    //     }
+    // }
+    // 预分配 rec 向量，并在每个批次前重置
+  
+    let mut rec = vec![0.0f32; n_col];
+    for b in 0..batch {
+        let base = b * n_col * n_row;
+
+        // 重置 rec 向量
+        for j in 0..n_col {
+            rec[j] = 0.0;
+        }
+
+        // 计算每一行的平方和
+        for i in 0..(n_col * n_row) {
+            let col_idx = i / n_col;
+            rec[col_idx] += _x[i + base] * _x[i + base];
+        }
+
+        // 计算 RMS 并添加 epsilon
+        for j in 0..n_col {
+            rec[j] = (rec[j] / n_col as f32).sqrt() + epsilon;
+        }
+
+        // 归一化并应用权重
+        for i in 0..(n_col * n_row) {
+            let row_idx = i / n_col;
+            let col_idx = i % n_col;
+            _y[i + base] = _x[i + base] * w.data()[col_idx] / rec[row_idx];
+        }
+    }
+      
+        // 首先计算输出有多少个block
+        // 之后对每一个block来开始进行按照+col的来计算
+        // 得到最后的长度
+    
+
+    
+    
 }
 
 // y = silu(x) * y
 // hint: this is an element-wise operation
 pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
-    // let len = y.size();
-    // assert!(len == x.size());
+    let len = y.size();
+    assert!(len == x.size());
 
-    // let _y = unsafe { y.data_mut() };
-    // let _x = x.data();
+    let _y = unsafe { y.data_mut() };
+    let _x = x.data();
+    let shape_x = x.shape();
+    // step1:获取整个长度进行softmax
+    let x_len = x.size();
+    let mut out = Tensor::new(vec![0.0 as f32;x_len],shape_x);
+    let _out =unsafe { out.data_mut() };
+    // (0..x_len).for_each(|j|_out[j]=1.0/(1.0+(-_x[j]).exp()));
+    
+    // (0..x_len).for_each(|j|_out[j]*=_x[j]);
+    // (0..x_len).for_each(|j|_y[j]*=_out[j]);
+    // todo!("实现 silu，这里给了一些前期准备工作的提示，你可以参考")
+    // 优化到一个
+    for (y_it,x_it) in _y.iter_mut().zip(_x){
+        let sig = 1.0 / (1.0 + (-x_it).exp());
+        let six = *x_it *sig;
+        *y_it*=six;
 
-    todo!("实现 silu，这里给了一些前期准备工作的提示，你可以参考")
+    }
 }
 
 // C = beta * C + alpha * A @ B^T
@@ -174,6 +259,7 @@ pub fn random_sample(x: &Tensor<f32>, top_p: f32, top_k: u32, temperature: f32) 
 // Your implementation should at least pass the following tests:
 #[test]
 fn test_silu() {
+    // 句子长度为 1，词向量长度为 3
     let mut y = Tensor::<f32>::new(vec![2., 3., 4.], &vec![1, 3]);
     let x = Tensor::<f32>::new(vec![1., 2., 3.], &vec![1, 3]);
     swiglu(&mut y, &x);
@@ -189,6 +275,7 @@ fn test_rms_norm() {
     let x = Tensor::<f32>::new(vec![1., 2., 3., 4.], &vec![2, 2]);
     let w = Tensor::<f32>::new(vec![1., 2.], &vec![2]);
     rms_norm(&mut y, &x, &w, 1e-6);
+    println!("{:?}", y);
     assert!(y.close_to(
         &Tensor::<f32>::new(
             vec![0.6324554, 2.5298216, 0.8485281, 2.2627416],

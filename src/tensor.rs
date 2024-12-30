@@ -1,4 +1,5 @@
 use std::{slice, sync::Arc, vec};
+#[derive(Debug)]
 pub struct Tensor<T> {
     data: Arc<Box<[T]>>,
     shape: Vec<usize>,
@@ -8,7 +9,9 @@ pub struct Tensor<T> {
 
 impl<T: Copy + Clone + Default> Tensor<T> {
     pub fn new(data: Vec<T>, shape: &Vec<usize>) -> Self {
+        // 长度是data的长度就是3
         let length = data.len();
+        // 加入共享arc，放入堆中
         Tensor {
             data: Arc::new(data.into_boxed_slice().try_into().unwrap()),
             shape: shape.clone(),
@@ -29,6 +32,7 @@ impl<T: Copy + Clone + Default> Tensor<T> {
 
     pub unsafe fn data_mut(&mut self) -> &mut [T] {
         let ptr = self.data.as_ptr().add(self.offset) as *mut T;
+        // 返回后面移动的offset的可变长度是length的数组
         slice::from_raw_parts_mut(ptr, self.length)
     }
 
