@@ -1,13 +1,19 @@
 use std::fs::File;
 use std::vec;
+extern crate bytemuck;
+
+use bytemuck::cast_slice;
 
 use crate::config::LlamaConfigJson;
 use crate::kvcache::KVCache;
 use crate::operators as OP;
 use crate::params::LLamaParams;
 use crate::tensor::Tensor;
-use safetensors::SafeTensors;
+use safetensors::{Dtype, SafeTensors};
 use std::path::Path;
+use rand::Rng;
+use crate::operators::{matmul_transb, rms_norm, swiglu};
+
 pub struct Llama<T> {
     vocab: usize,           // vocab size
     n_layers: usize,        // number of layers
@@ -26,13 +32,35 @@ pub struct Llama<T> {
 
 impl Llama<f32> {
     pub fn from_safetensors(model_dir: impl AsRef<Path>) -> Self {
+        // 通过读取config来获取llama的架构
         let config = File::open(model_dir.as_ref().join("config.json")).unwrap();
         let config: LlamaConfigJson = serde_json::from_reader(config).unwrap();
+        // 读取参数model的safetensor
         let model_file = std::fs::read(model_dir.as_ref().join("model.safetensors")).unwrap();
         let safetensor = SafeTensors::deserialize(&model_file).unwrap();
+        // 主要是完善读取参数到llm
+        // let names = safetensor.names();
+        // for name in names {
+        //     let tensor_view = safetensor.tensor("model.layers.1.self_attn.v_proj.weight").unwrap();
+        //     println!("Tensor name: {}", name);
+        //     println!("  dtype: {:?}", tensor_view.dtype());
+        //     println!("  shape: {:?}", tensor_view.shape());
+        //     // 如果类型是 F32，可以将其加载到一个 Vec<f32> 中
+        //     if let Dtype::F32 = tensor_view.dtype() {
+        //         // 获取底层字节切片
+        //         let bytes = tensor_view.data();
+        //         // 转换为 f32 slice（注意字节对齐和安全性）
+        //         let float_data = bytemuck::cast_slice::<u8, f32>(bytes);
+        //
+        //         // 打印部分数据
+        //         println!("  First 5 elements: {:?}", &float_data[..5.min(float_data.len())]);
+        //
+        //
+        //     }
+        // }
         let params = LLamaParams::from_safetensors(&safetensor, &config);
 
-        Self {
+            Self {
             vocab: config.vocab_size,
             n_layers: config.num_hidden_layers,
             n_q_h: config.num_attention_heads,
@@ -167,7 +195,29 @@ fn mlp(
     rms_w: &Tensor<f32>,
     eps: f32,
 ) {
-    todo!("Implement mlp");
+    // todo!("Implement mlp");
+
+    rms_norm(hidden_states,residual, rms_w, eps);
+    println!("{:?}", hidden_states);
+
+    matmul_transb(gate,0.0,hidden_states, w_gate, 1.0);
+    println!("{:?}", gate);
+
+    matmul_transb(up,0.0,hidden_states, w_up, 1.0);
+    swiglu(up,gate);
+    println!("{:?}", up);
+
+    let mut act =Tensor::default(residual.shape());
+    matmul_transb(&mut act,0.0,up,w_down,1.0);
+    let n =act.size();
+    let _res = unsafe{residual.data_mut()};
+    println!("{:?}", act);
+
+    for i in (0..n){
+        _res[i]+=act.data()[i];
+    }
+
+
 }
 
 #[test]
@@ -195,7 +245,7 @@ pub fn test_mlp() {
         &rms_w,
         eps,
     );
-
+    println!("{:?}", residual);
     assert!(residual.close_to(
         &Tensor::<f32>::new(
             vec![

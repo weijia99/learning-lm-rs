@@ -107,23 +107,23 @@ pub fn rms_norm(y: &mut Tensor<f32>, x: &Tensor<f32>, w: &Tensor<f32>, epsilon: 
     // }
     // 预分配 rec 向量，并在每个批次前重置
   
-    let mut rec = vec![0.0f32; n_col];
+    let mut rec = vec![0.0f32; n_row];
     for b in 0..batch {
         let base = b * n_col * n_row;
 
         // 重置 rec 向量
-        for j in 0..n_col {
+        for j in 0..n_row {
             rec[j] = 0.0;
         }
 
         // 计算每一行的平方和
         for i in 0..(n_col * n_row) {
-            let col_idx = i / n_col;
-            rec[col_idx] += _x[i + base] * _x[i + base];
+            let row_idx = i / n_col;
+            rec[row_idx] += _x[i + base] * _x[i + base];
         }
 
         // 计算 RMS 并添加 epsilon
-        for j in 0..n_col {
+        for j in 0..n_row {
             rec[j] = (rec[j] / n_col as f32).sqrt() + epsilon;
         }
 
@@ -174,7 +174,47 @@ pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
-    todo!("实现 matmul_transb，计算前做一些必要的检查会帮助你后续调试");
+    let a_row = a.shape()[a.shape().len()-2];
+    let a_col = a.shape()[a.shape().len()-1];
+    let b_row = b.shape()[b.shape().len()-2];
+    let b_col = b.shape()[b.shape().len()-1];
+    let c_row = c.shape()[c.shape().len()-2];
+    let c_col = c.shape()[c.shape().len()-1];
+    assert!(a_col == b_col);
+    assert!(a_row == c_row);
+    assert!(b_row == c_col);
+    // 计算batch
+    let batch = c.size()/(c_row * c_col);
+    let _c = unsafe { c.data_mut() };
+    let _a = a.data();
+    let _b = b.data();
+    let a_batch = a.size()/(a_row * a_row);
+    let b_batch = b.size()/(b_row * b_row);
+    // assert!(a_batch == b_batch);
+    let _ = _c.iter().map(|j|beta*j);
+    for b in (0..batch) {
+        let c_offset = b * c_row * c_col;
+        let a_offset = b*a_row * a_col;
+        let b_offset = b*b_row * b_col;
+        for i in 0..c_row {
+            for j in 0..c_col {
+                // _c[i*c_col+j+c_offset]+=
+            //     获取a，b来进行点击
+                let ax = Tensor::new(
+                    _a[(a_offset+i*a_col)..(a_offset+(i+1)*a_col)].to_vec(),
+                    &vec![1,a_col]
+                );
+                let by = Tensor::new(
+                    _b[(b_offset+j*b_col)..(b_offset+(j+1)*b_col)].to_vec(),
+                    &vec![1,b_col]
+                );
+                let plus = dot(&ax,&by)*alpha;
+                _c[i*c_col+j+c_offset]+=plus;
+            }
+        }
+    }
+
+
 }
 
 // Dot product of two tensors (treated as vectors)
