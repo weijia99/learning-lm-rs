@@ -153,7 +153,7 @@ pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
     let _y = unsafe { y.data_mut() };
     let _x = x.data();
     let shape_x = x.shape();
-    // step1:获取整个长度进行softmax
+    // step1:获取整个长度进行sigmoid
     let x_len = x.size();
     let mut out = Tensor::new(vec![0.0 as f32;x_len],shape_x);
     let _out =unsafe { out.data_mut() };
