@@ -4,6 +4,7 @@ mod model;
 mod operators;
 mod params;
 mod tensor;
+mod model2;
 
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
