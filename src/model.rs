@@ -10,9 +10,10 @@ use crate::operators as OP;
 use crate::params::LLamaParams;
 use crate::tensor::Tensor;
 use safetensors::{Dtype, SafeTensors};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use rand::Rng;
-use crate::operators::{dot, gather, masked_softmax, matmul_transb, rms_norm,  swiglu};
+use tokenizers::Tokenizer;
+use crate::operators::{dot, gather, masked_softmax, matmul_transb, rms_norm, swiglu, random_sample};
 
 pub struct Llama<T> {
     vocab: usize,           // vocab size
@@ -39,25 +40,25 @@ impl Llama<f32> {
         let model_file = std::fs::read(model_dir.as_ref().join("model.safetensors")).unwrap();
         let safetensor = SafeTensors::deserialize(&model_file).unwrap();
         // 主要是完善读取参数到llm
-        // let names = safetensor.names();
-        // for name in names {
-        //     let tensor_view = safetensor.tensor("model.layers.1.self_attn.v_proj.weight").unwrap();
-        //     println!("Tensor name: {}", name);
-        //     println!("  dtype: {:?}", tensor_view.dtype());
-        //     println!("  shape: {:?}", tensor_view.shape());
-        //     // 如果类型是 F32，可以将其加载到一个 Vec<f32> 中
-        //     if let Dtype::F32 = tensor_view.dtype() {
-        //         // 获取底层字节切片
-        //         let bytes = tensor_view.data();
-        //         // 转换为 f32 slice（注意字节对齐和安全性）
-        //         let float_data = bytemuck::cast_slice::<u8, f32>(bytes);
-        //
-        //         // 打印部分数据
-        //         println!("  First 5 elements: {:?}", &float_data[..5.min(float_data.len())]);
-        //
-        //
-        //     }
-        // }
+        let names = safetensor.names();
+        for name in names {
+            let tensor_view = safetensor.tensor("model.layers.1.mlp.up_proj.weight").unwrap();
+            println!("Tensor name: {}", name);
+            println!("  dtype: {:?}", tensor_view.dtype());
+            println!("  shape: {:?}", tensor_view.shape());
+            // 如果类型是 F32，可以将其加载到一个 Vec<f32> 中
+            if let Dtype::F32 = tensor_view.dtype() {
+                // 获取底层字节切片
+                let bytes = tensor_view.data();
+                // 转换为 f32 slice（注意字节对齐和安全性）
+                let float_data = bytemuck::cast_slice::<u8, f32>(bytes);
+
+                // 打印部分数据
+                println!("  First 5 elements: {:?}", &float_data[..5.min(float_data.len())]);
+
+
+            }
+        }
         let params = LLamaParams::from_safetensors(&safetensor, &config);
 
             Self {
@@ -141,7 +142,8 @@ impl Llama<f32> {
                 total_seq_len,
                 self.dqkv
             );
-            println!("{:?}",hidden_states.data());
+            let a1 = hidden_states.data();
+            // println!("{:?}",a1);
 
 
             // todo!("self_attention(...)");
@@ -149,8 +151,11 @@ impl Llama<f32> {
 
             // todo!("mlp(...)");
             OP::matmul_transb(&mut residual, 1., &hidden_states, &self.params.wo[layer], 1.);
+            let b =residual.data();
+            // println!("{:?}",b);
+            // println!("{:?}",a);
             //todo!("mlp(...)");
-            hidden_states = Tensor::<f32>::default(&vec![seq_len, self.d]);
+            let mut hidden_states = Tensor::<f32>::default(&vec![seq_len, self.d]);
             mlp(
                 &mut residual,
                 &mut hidden_states,
@@ -162,12 +167,22 @@ impl Llama<f32> {
                 &self.params.rms_ffn_w[layer],
                 self.eps
             );
-            println!("{:?}",residual)
+            let a =residual.data();
+            // let a = self.params.w_up[1].data();
+            // println!("{:?}",a);
+            // let a1 = self.params.w_down[1].data();
+            // println!("{:?}",a1);
+            // let a2 = self.params.w_gate[1].data();
+            // println!("{:?}",a2);
+            // let a3 = self.params.rms_ffn_w[1].data();
+            // println!("{:?}",a3);
+
         }
 
         // No matter what seq_len, the output is always a 1D vector of length vocab,
         // which contains the probabilities for the next token.
         let mut logits = Tensor::<f32>::default(&vec![1, self.vocab]);
+        // 返回一个词表的概率，hidden是（seq_len,d)的矩阵，最后一行
         let mut hidden_states = hidden_states.slice((seq_len - 1) * self.d, &vec![1, self.d]);
         let residual = residual.slice((seq_len - 1) * self.d, &vec![self.d]);
 
@@ -179,7 +194,7 @@ impl Llama<f32> {
         );
 
         OP::matmul_transb(&mut logits, 0., &hidden_states, &self.params.lm_head, 1.0);
-
+        // print!("{:?}",logits.data());
         logits
     }
 
@@ -191,14 +206,136 @@ impl Llama<f32> {
         top_k: u32,
         temperature: f32,
     ) -> Vec<u32>{
-        let mut result = Vec::<u32>::new();
+        let mut result: Vec<u32>  = Vec::new();
         let mut kv_cache = Llama::new_cache(self);
         // todo!("实现文本生成");
         // 根据top_p,top_k来进行采样生成
+        // 1.是否在max_len之前停止
+        // 2.根据top_p和top_k来进行采样
+        let mut input = Tensor::<u32>::new(Vec::from(token_ids), &vec![1, token_ids.len()]);
+        while result.len() < max_len{
+            // 1.根据token_ids生成下一个token
+            let output = self.forward(&input, &mut kv_cache);
+            let next_token =random_sample(&output,  top_p, top_k, temperature);
+            if next_token == self.eos_token_id{
+                break;
+            }
+            input=Tensor::<u32>::new(vec![next_token], &vec![1,1]);
+            result.push(next_token);
+
+        }
         result
+
+    }
+    pub fn chat( &self,
+                 token_ids: &[u32],
+                 max_len: usize,
+                 top_p: f32,
+                 top_k: u32,
+                 temperature: f32,
+                 mut cache: KVCache<f32>
+    ) -> (Vec<u32>,KVCache<f32>){
+       // todo!()
+    //     基于kvcache的加速，通过服用上一轮的无须使用
+        let n =token_ids.len();
+        let mut result: Vec<u32>  = Vec::new();
+        // todo!("实现文本生成");
+        // 根据top_p,top_k来进行采样生成
+        // 1.是否在max_len之前停止
+        // 2.根据top_p和top_k来进行采样
+        let mut input = Tensor::<u32>::new(Vec::from(token_ids), &vec![1, token_ids.len()]);
+        while result.len() < max_len{
+            // 1.根据token_ids生成下一个token
+            let output = self.forward(&input, &mut cache);
+            let next_token =random_sample(&output,  top_p, top_k, temperature);
+            if next_token == self.eos_token_id{
+                break;
+            }
+            input=Tensor::<u32>::new(vec![next_token], &vec![1,1]);
+            result.push(next_token);
+
+        }
+
+        (result,cache)
+
+
     }
 }
 
+fn self_attention1(
+    hidden_states: &mut Tensor<f32>, // (seq, n_kv_h * n_groups * dqkv)
+    att_scores: &mut Tensor<f32>,    // (n_kv_h, n_groups, seq, total_seq)
+    q: &Tensor<f32>,                 // (seq, n_kv_h * n_groups * dqkv)
+    k: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+    v: &Tensor<f32>,                 // (total_seq, n_kv_h * dqkv)
+    n_kv_h: usize,
+    n_groups: usize,
+    seq_len: usize,
+    total_seq_len: usize,
+    dqkv: usize,
+) {
+    // step 1 ,socre = Q @ K.T / sqrt(dim)
+    let sqrt_dim = (dqkv as f32).sqrt();
+    let scores = unsafe{att_scores.data_mut()};
+    for i in 0..seq_len{
+        for j in 0..total_seq_len{
+            for m in 0..n_kv_h{
+                for n in 0..n_groups{
+                    let q_start = (m * n_groups + n) * dqkv + i * n_groups * n_kv_h * dqkv;
+                    let q_= q.slice(q_start, &vec![dqkv, 1]);
+                    let k_start = m * dqkv + j *  n_kv_h * dqkv;
+                    let k_: Tensor<f32> = k.slice(k_start, &vec![dqkv, 1]);
+                    let value = OP::dot(&q_, &k_) / sqrt_dim;
+                    scores[m * n_groups * seq_len * total_seq_len
+                        + n * seq_len * total_seq_len
+                        + i * total_seq_len
+                        + j]
+                        = value;
+                }
+            }
+        }
+    }
+    // step 2, attn = softmax(score)
+    OP::masked_softmax(att_scores);
+    // step 3, x = attn @ V
+    // attn (n_kv_head, n_group, seq_len, total_seq_len) --> n_kv_head * n_group * (seq_len, total_seq_len)
+    // attn_slice = (seq_len, total_seq_len)
+    // v (total_seq_len, n_kv_head * head_size) --> v.T (n_kv_head * head_size, total_seq_len)
+    // v.T (n_kv_head * head_size, total_seq_len) --> n_kv_head * (head_size, total_seq_len)
+    // v.T_slice = (head_size, total_seq_len)
+    // matmul_transb (attn_slice , v.T_slice) = (seq_len, head_size)
+    // hidden_state = attn @ V = n_kv_head * n_group * (seq_len, head_size) = (seq_len, n_kv_head * n_group * head_size)
+    let v_data = v.data();
+    let hidden_len = n_kv_h * n_groups * dqkv;
+    let hidden = unsafe{hidden_states.data_mut()};
+    for i in 0..n_kv_h{
+        for j in 0..n_groups{
+            let attn_start = (i * n_groups + j) * seq_len * total_seq_len;
+            let attn_slice = &att_scores.slice(attn_start, &vec![seq_len, total_seq_len]);
+            // reverse v
+            let mut v_rev = vec![0.; dqkv * total_seq_len];
+            for m in 0..dqkv{
+                for n in 0..total_seq_len{
+                    v_rev[m * total_seq_len + n] = v_data[n * dqkv * n_kv_h + i * dqkv + m];
+                }
+            }
+            let v_rev_tensor = Tensor::new(v_rev, &vec![dqkv, total_seq_len]);
+            // matmul_transb result
+            let mut mat_result = Tensor::default(&vec![seq_len, dqkv]);
+            OP::matmul_transb(&mut mat_result, 0., &attn_slice, &v_rev_tensor, 1.);
+            // hidden_state
+            let mat_data = mat_result.data();
+            for row in 0..seq_len{
+                for col in 0..dqkv{
+                    hidden[hidden_len * row + (i * n_groups + j) * dqkv + col] = mat_data[row * dqkv + col];
+                }
+            }
+        }
+    }
+    // print!("{:?}", hidden_states.data());
+
+
+}
 fn reshape_tensor(
     q: & [f32],              // 原来的 2D 数组: shape=(seq, n_kv_h*n_groups*dqkv)
     seq: usize,
@@ -314,12 +451,12 @@ fn self_attention(
 //     实现self-attention
     let _q =q.data();
     let q_new =reshape_tensor(_q, seq_len, n_kv_h, n_groups, dqkv);
-    // let q_new =_q.to_vec();
+
     let _k = k.data();
-    // let k_new =_k.to_vec();
+
     let k_new =reshape_tensor(_k, total_seq_len, n_kv_h, 1, dqkv);
     let _v = v.data();
-    // let v_new =reshape_tensor(_v, dqkv, n_kv_h, 1, total_seq_len);
+
     let v_new =reshape_vtensor( total_seq_len, n_kv_h,  dqkv,_v);
 
     // 第一步qk
@@ -333,7 +470,7 @@ fn self_attention(
         });
 
 
-        print!("{:?}",att_scores);
+
 
     }// 第二步进行掩码
 
@@ -345,7 +482,6 @@ fn self_attention(
         Tensor::<f32>::default(&vec![n_kv_h, n_groups, seq_len, dqkv]);
    let _att_v = unsafe { att_v.data_mut()};
     matmul_with_batch1(n_kv_h,n_groups,seq_len,dqkv,&total_seq_len,&attn_new,&v_new,_att_v);
-    // let out  = att_v.reshape(&vec![seq_len, n_kv_h * n_groups * dqkv]);
 
     let out = reshape_tensor_2d(_att_v,n_kv_h,n_groups,seq_len,dqkv);
 
@@ -356,7 +492,7 @@ fn self_attention(
     for i in (0..n) {
         _hidden[i]=out[i];
     }
-    println!("{:?}",hidden_states.data());
+
 }
 
 fn matmul_with_batch1(n_kv_h: usize, n_groups: usize, seq_len: usize, total_seq_len: usize, dqkv: &usize, _q: & Vec<f32>, _k: & Vec<f32>, _attn: &mut [f32]) {
@@ -504,23 +640,4 @@ pub fn test_forward() {
     let input = Tensor::<u32>::new(vec![0, 1, 2, 3, 4, 5, 6, 7], &vec![8]);
     let mut cache = model.new_cache();
     let output = model.forward(&input, &mut cache).print();
-
-    // use std::path::PathBuf;
-    // use tokenizers::Tokenizer;
-    // let project_dir = env!("CARGO_MANIFEST_DIR");
-    // let model_dir = PathBuf::from(project_dir).join("models").join("story");
-    // let llama = Llama::<f32>::from_safetensors(&model_dir);
-    // let tokenizer = Tokenizer::from_file(model_dir.join("tokenizer.json")).unwrap();
-    // let input = "Once upon a time";
-    // let binding = tokenizer.encode(input, true).unwrap();
-    // let input_ids = binding.get_ids();
-    // for i in input_ids {
-    //     print!("{},", i);
-    //
-    // }
-    //
-    //
-    // let mut cache = llama.new_cache();
-    // let input_tensor = Tensor::new(input_ids.to_vec(), &vec![1,input_ids.len()]);
-    // llama.forward(&input_tensor, &mut cache).print();
 }

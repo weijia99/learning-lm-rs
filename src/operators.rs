@@ -171,6 +171,40 @@ pub fn swiglu(y: &mut Tensor<f32>, x: &Tensor<f32>) {
     }
 }
 
+pub fn matmul_transb1(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
+    // 确保 A 和 B 能进行矩阵乘法
+    assert!(a.shape().len() == b.shape().len());
+    // 确保 A 和 C 能进行矩阵加法
+    assert!(a.shape().len() == c.shape().len());
+
+    let ndim = a.shape().len();
+    assert!(ndim >= 2);
+    let a_row = a.shape()[ndim - 2];
+    let a_col = a.shape()[ndim - 1];
+
+    let b_row = b.shape()[ndim - 2];
+    let b_col = b.shape()[ndim - 1];
+
+    let c_row = c.shape()[ndim - 2];
+    let c_col = c.shape()[ndim - 1];
+
+    let _c = unsafe { c.data_mut() };
+    let _a = a.data();
+    let _b = b.data();
+
+    assert!(a_col == b_col);
+    assert!(c_col == b_row);
+    assert!(a_row == c_row);
+
+    for l in 0..c_row {
+        for i in 0..c_col {
+            let sum = (0..a_col)
+                .map(|j| _a[l * a_col + j] * _b[i * b_col + j])
+                .sum::<f32>();
+            _c[l * c_col + i] = beta * _c[l * c_col + i] + alpha * sum;
+        }
+    }
+}
 // C = beta * C + alpha * A @ B^T
 // hint: You don't need to do an explicit transpose of B
 pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor<f32>, alpha: f32) {
@@ -191,7 +225,7 @@ pub fn matmul_transb(c: &mut Tensor<f32>, beta: f32, a: &Tensor<f32>, b: &Tensor
     let a_batch = a.size()/(a_row * a_row);
     let b_batch = b.size()/(b_row * b_row);
     // assert!(a_batch == b_batch);
-    let _ = _c.iter().map(|j|beta*j);
+    for j in _c.iter_mut() { *j *= beta; }
     for b in (0..batch) {
         let c_offset = b * c_row * c_col;
         let a_offset = b*a_row * a_col;

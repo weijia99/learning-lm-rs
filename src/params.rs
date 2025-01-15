@@ -44,9 +44,15 @@ impl LLamaParams<f32> {
             }
                ).collect::<Vec<Tensor<f32>>>()
         });
-
+        let embedding_table = if config.tie_word_embeddings {
+            "lm_head.weight"
+        } else {
+            "model.embed_tokens.weight"
+        };
         LLamaParams {
-            embedding_table: get_tensor("lm_head.weight"),
+            // 注意embed与lm可能不一样
+
+            embedding_table: get_tensor(embedding_table),
             rms_att_w:get_layer_tensor("input_layernorm.weight", config.num_hidden_layers as u32),
             wq:get_layer_tensor("self_attn.q_proj.weight", config.num_hidden_layers as u32),
             wk:get_layer_tensor("self_attn.k_proj.weight", config.num_hidden_layers as u32),
@@ -61,4 +67,7 @@ impl LLamaParams<f32> {
         }
 
     }
+
+
+
 }
